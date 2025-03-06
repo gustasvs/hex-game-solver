@@ -1,8 +1,19 @@
 import numpy as np
 import copy
+import random
+import pickle
 
 from game_logic.game_base import Game
 from mcts.mcts_search import MCTS, MockNetwork
+from model import Model
+
+from utils.clean_up_console_logs import clean_up_console_logs
+
+
+from settings import *
+
+clean_up_console_logs()
+
 
 def test_single_player_game():
     game = Game(7, 6)
@@ -28,12 +39,11 @@ def self_play(game, mcts):
     current_move = 0
     while not game.game_over:
         action_probabilities, visit_counts = mcts.run(game)
-        # action_probabilities, visit_counts = {0: 0.1, 1: 0.1, 2: 0.1, 3: 0.1, 4: 0.1, 5: 0.1, 6: 0.4}, [1, 1, 1, 1, 1, 1, 1]
-
+       
         available_moves = game.available_moves()
 
         # print("AVAIALLBALE MOVES", available_moves)
-
+        print("VISIT COUNTS", visit_counts, "PROBABILITIES", action_probabilities)
         for i in range(len(visit_counts)):
             if i not in available_moves:
                 visit_counts[i] = 0
@@ -49,7 +59,8 @@ def self_play(game, mcts):
         else:
             action = np.random.choice([i for i in range(7)], p=visit_counts / np.sum(visit_counts))
 
-        recorded_game.append((game.get_hash(), action_probabilities, 0))
+        board_state, _ = game.get_board_state_for_nn()
+        recorded_game.append((board_state, action_probabilities, 0))
 
         is_won = game.make_move(action, game.current_player)
 
@@ -59,6 +70,8 @@ def self_play(game, mcts):
             current_player = game.current_player
             print("Player", current_player, "won!")
             print(game.get_human_readable_board())
+            print("calculations saved using hash map", mcts.network.times_used_hash)
+            print("total predictions made", mcts.network.total_predict_calls)
             
             result_for_first_player = 1 if current_player == 1 else -1
             result_for_second_player = 1 if current_player == 2 else -1
@@ -76,21 +89,59 @@ def self_play(game, mcts):
     return recorded_game
 
 
-if __name__ == "__main__":
-    # test_single_player_game()
+def play_and_save_games():
+
     game = Game(7, 6)
-    net = MockNetwork()
-    mcts = MCTS(network=net, c_puct=1.0, num_simulations=25)
-    
-    self_play_game_count = 1
+    net = Model(7, 6)
+    mcts = MCTS(network=net, c_puct=1.0, num_simulations=MCTS_SIMULATIONS_PER_MOVE)
 
     games = []
     
-    for i in range(self_play_game_count):
+    for i in range(SELF_PLAY_GAME_COUNT):
         game.reset()
         recorded_game = self_play(game, mcts)
         games.append(recorded_game)
-        print("RECORDED GAME", recorded_game)
+        # print("RECORDED GAME", recorded_game)
+
+    with open("games.pkl", "wb") as f:
+        pickle.dump(games, f)
+
+
+
+def train_model():
+    net = Model(7, 6)
+    net.model.summary()
+    with open("games.pkl", "rb") as f:
+         games = pickle.load(f)
+
+
+
+    actions = [move for game in games for move in game]
+    random.shuffle(actions)
+    batch_size = 32
+    batches = [actions[i:i+batch_size] for i in range(0, len(actions), batch_size)]
+
+    for batch in batches:
+        print("Training batch",  batch)
+        target_data = []
+        for move in batch:
+            action_probabilities = move[1]
+            value = move[2]
+            target_data.append((action_probabilities, value))
+        target_data = list(zip(*target_data))
+        target_data = [np.array(target_data[0]), np.array(target_data[1])]
+        net.train(input_data, target_data)
+
+    net.save()
+
+if __name__ == "__main__":
+
+    # play_and_save_games()
+
+    train_model()
+    
+    
+
 
     
     

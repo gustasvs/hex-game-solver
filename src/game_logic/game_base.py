@@ -134,15 +134,23 @@ class Game:
 
         return result_str
     
-    def get_valid_nn_input(self):
-        # returns input for the neural network
-        # shape: (1, board_height, board_width, 2)
-        return np.array([np.stack([self.board_first, self.board_second], axis=-1)])
-    
     def get_hash(self):
         # returns a hash of the current game state
         return hash((self.current_player, self.winner, self.game_over, self.board_first.tobytes(), self.board_second.tobytes()))
     
+    def get_board_hash(self):
+        # shorter hash with only the board state
+        return hash((self.board_first.tobytes(), self.board_second.tobytes()))
+
+    def get_board_state_for_nn(self):
+
+        board_hash = self.get_board_hash()
+
+        if self.current_player == 1:
+            return np.stack([self.board_first, self.board_second], axis=-1).reshape(1, self.board_height, self.board_width, 2), board_hash
+        else:
+            return np.stack([self.board_second, self.board_first], axis=-1).reshape(1, self.board_height, self.board_width, 2), board_hash
+
     def set_hash(self, hash):
         self.reset()
         # sets the game state from a previously saved hash

@@ -109,11 +109,8 @@ class MCTS:
             probs = np.ones(len(visit_counts)) / len(visit_counts)
 
         # Map probabilities back to the move indexes
-        action_to_prob = []
-        for i, action in enumerate(sorted(root.children.keys())):
-            action_to_prob.append(probs[i])
 
-        return action_to_prob, visit_counts
+        return probs, visit_counts
 
     def _select(self, node):
         """
@@ -175,25 +172,28 @@ class MCTS:
         """
         Uses the neural network to get (policy, value) for the given state.
         The state must be represented in a suitable input format.
-        For now we use a placeholder function 'get_state_representation'.
         """
-        state_input = node.game.get_valid_nn_input()
-        policy, value = self.network.predict(state_input)
+        state_input, board_hash = node.game.get_board_state_for_nn()
+        # given they are supposed to be "batched" and currently we just need the first/only one
+        [policy], [value] = self.network.predict(state_input, board_hash)
+        # print("policy", policy, "value", value)
         # 'policy' might be for all columns. We only keep the valid columns.
         valid_moves = node.game.available_moves()
-        masked_policy = {}
-        policy_sum = 0
-        for action in valid_moves:
-            masked_policy[action] = policy[action]
-            policy_sum += policy[action]
-        # Normalize
+
+        masked_policy = { i: 0 for i in range(node.game.board_width) }
+
+        for i in valid_moves:
+            # print("i", i, "policy[i]", policy[i])
+            masked_policy[i] = policy[i]
+
+        policy_sum = sum(masked_policy.values())
         if policy_sum > 0:
-            for action in masked_policy.keys():
-                masked_policy[action] /= policy_sum
+            # Normalize the policy
+            masked_policy = {k: v / policy_sum for k, v in masked_policy.items() if k in valid_moves}
         else:
-            # if total policy sum is 0, just assign uniform
-            for action in masked_policy.keys():
-                masked_policy[action] = 1.0 / len(valid_moves)
+            # edge case: all valid moves were masked
+            # we should never reach here
+            masked_policy = {k: 1 / len(valid_moves) for k in valid_moves}   
 
         return masked_policy, value
 
@@ -204,9 +204,10 @@ class MockNetwork:
     Replace with a real trained model.
     """
     def predict(self, state_input):
-        # state_input shape: (1, board_height, board_width, 2)
-        _, h, w, _ = state_input.shape
+        # state_input shape: (board_height, board_width, 2)
+
+       
         # random policy for w columns
-        random_policy = np.random.rand(w)
+        random_policy = np.random.rand(7)
         random_value = np.random.uniform(-1, 1)
         return random_policy, random_value
