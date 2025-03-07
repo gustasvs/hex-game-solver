@@ -25,11 +25,18 @@ class Game:
         for i in range(self.board_width):
             if not self.board_first[0][i] and not self.board_second[0][i]:
                 moves.append(i)
+        
+        if len(moves) == 0:
+            self.game_over = True
+            self.winner = 0
+
         return moves
         
     def make_move(self, column, player):
         # print("called make_move", column, player)
-        assert not self.game_over
+        if self.game_over or len(self.available_moves()) == 0:
+            return True
+        
         assert player == self.current_player
 
         move_row = 0

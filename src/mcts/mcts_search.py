@@ -166,7 +166,7 @@ class MCTS:
             current = current.parent
             # For Connect4 in a zero-sum setting, we can invert value each step
             # if we want each parent's perspective. For simplicity, skip that:
-            # value = -value
+            value = -value
 
     def _evaluate(self, node):
         """

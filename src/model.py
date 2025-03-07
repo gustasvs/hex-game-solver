@@ -73,3 +73,6 @@ class Model:
 
     def save(self, path="model/model.h5"):
         self.model.save(path)
+
+    def load_pretrained_model(self, path="model/model.h5"):
+        self.model = tf.keras.models.load_model(path)
