@@ -1,0 +1,4 @@
+1.	(q0, H) -> (qACCEPT)	ja pirmais simbols ir H, tad atgriežam
+2.	(q0, *\{a}) -> (qREJECT)  ja pirmais simbols nav a, tad noraida un atgriež 0
+3.	(q0, a) -> (q1, a, ->)
+4.  (q1, )

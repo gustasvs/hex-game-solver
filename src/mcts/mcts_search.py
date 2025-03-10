@@ -91,7 +91,17 @@ class MCTS:
         # Run N simulations
         for _ in range(self.num_simulations):
             node = self._select(root)
+
+            # print("root current player", root.game.current_player)
+
+            # print("node current player", node.game.current_player)
+
+
             value = self._simulate(node)
+
+            if root.game.current_player != node.game.current_player:
+                value = -value
+
             self._backpropagate(node, value)
 
         # At the root node, collect visit counts for each valid action
@@ -139,15 +149,32 @@ class MCTS:
         """
         # If game is already over at this node, return outcome
         if node.game.game_over:
-            if node.game.winner == 1:
-                return 1.0
-            elif node.game.winner == 2:
-                return -1.0
-            else:
+        #     if node.game.winner == 1:
+        #         return 1.0
+        #     elif node.game.winner == 2:
+        #         return -1.0
+        #     else:
+        #         return 0.0
+            # Debug log for terminal state
+            # print(f"Terminal node: current_player={node.game.current_player}, winner={node.game.winner}")
+            if node.game.winner == 0:
                 return 0.0
+            else:
+                return 1.0
+            # if node.game.winner == node.game.current_player:
+            #     return 1.0
+            # elif node.game.winner == 0:  # assuming 0 indicates a draw
+            #     return 0.0
+            # else:
+            #     return -1.0
 
         # Evaluate the position with the network
+
+        # print(f"Node.game.huamn_readable_board:\n{node.game.get_human_readable_board()}")
+
+
         policy, value = self._evaluate(node)
+        # print("_evaluate results policy", policy, "value", value)
 
         # Expand children with the predicted policy
         node.expand(policy)
@@ -162,6 +189,9 @@ class MCTS:
         """
         current = node
         while current is not None:
+             # Debug log for backpropagation step
+            # print(f"Backpropagating at node (player={current.game.current_player}): value={value}")
+            
             current.update_stats(value)
             current = current.parent
             # For Connect4 in a zero-sum setting, we can invert value each step
@@ -174,9 +204,10 @@ class MCTS:
         The state must be represented in a suitable input format.
         """
         state_input, board_hash = node.game.get_board_state_for_nn()
-        # given they are supposed to be "batched" and currently we just need the first/only one
+
+        # extract from arrays because they are supposed to be "batched" and currently we just need the first/only one
         [policy], [value] = self.network.predict(state_input, board_hash)
-        # print("policy", policy, "value", value)
+        
         # 'policy' might be for all columns. We only keep the valid columns.
         valid_moves = node.game.available_moves()
 

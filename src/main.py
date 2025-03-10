@@ -58,7 +58,7 @@ def self_play(game, mcts):
         for i in range(len(visit_counts)):
             if i not in available_moves:
                 visit_counts[i] = 0
-            if current_move > 15 and not (action_probabilities[i] == np.max(action_probabilities)):
+            if current_move > 10 and not (action_probabilities[i] == np.max(action_probabilities)):
                 visit_counts[i] = 0
 
         # print("VISIT COUNTS", visit_counts, "PROBABILITIES", action_probabilities)
@@ -76,6 +76,7 @@ def self_play(game, mcts):
             action = np.random.choice([i for i in range(7)], p=visit_counts / np.sum(visit_counts))
 
             board_state, _ = game.get_board_state_for_nn()
+            # board_state = game.get_human_readable_board()
             recorded_game.append((board_state, action_probabilities, 0))
 
 
@@ -107,6 +108,16 @@ def self_play(game, mcts):
                 else:
                     recorded_game[i] = (recorded_game[i][0], recorded_game[i][1], result_for_second_player)
 
+
+            # debug log the recorded game
+            # for i, action in enumerate(recorded_game):
+            #     print("Move: ", i)
+            #     print(action[0])
+            #     print("Action probabilities", action[1])
+            #     print("Value target", action[2])
+            
+            # exit()
+
             return recorded_game
             
         current_move += 1
@@ -116,7 +127,11 @@ def self_play(game, mcts):
 
 def play_and_save_games(game, mcts):
 
-    games = []
+    try:
+        with open("games.pkl", "rb") as f:
+            games = pickle.load(f)
+    except FileNotFoundError:
+        games = []
     
     for i in range(SELF_PLAY_GAME_COUNT):
         print("playing game", i)
@@ -137,16 +152,17 @@ def train_model(net):
     with open("games.pkl", "rb") as f:
          games = pickle.load(f)
 
-
     actions = []
     action_count = 0
 
-    for game in games[:PAST_GAMES_TO_KEEP]:
+    for game in games:
         for action in game:
             actions.append(action)
             action_count += 1
 
-    print("Total actions after keeping only the last", PAST_GAMES_TO_KEEP, "games", action_count)
+    actions = actions[-MAX_PAST_ACTIONS_TO_KEEP:]
+    print("Total actions after keeping only the last", MAX_PAST_ACTIONS_TO_KEEP, "actions", len(actions))
+
 
     random.shuffle(actions)
 
@@ -194,11 +210,8 @@ def main():
         play_and_save_games(game, mcts)
 
         train_model(net)
-        # mcts.network.clear_hash_map()
+        mcts.network.clear_hash_map()
         net.clear_hash_map()
-    
-    
-
     
 
 if __name__ == "__main__":

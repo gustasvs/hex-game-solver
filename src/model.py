@@ -30,7 +30,7 @@ def train(model, input_data, target_data):
     """
     optimizer = tf.keras.optimizers.Adam()
     model.compile(optimizer=optimizer, loss=['categorical_crossentropy', 'mean_squared_error'])
-    model.fit(x=input_data, y=target_data, epochs=10, batch_size=32)
+    model.fit(x=input_data, y=target_data, epochs=15, batch_size=32)
 
 class Model:
     def __init__(self, board_width, board_height):

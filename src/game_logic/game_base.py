@@ -138,6 +138,11 @@ class Game:
 
                 result_str += " | "
             result_str += "\n"
+        
+        result_str += "-" * (self.board_width * 4 + 1) + "\n"
+        for i in range(self.board_width):
+            result_str += f"| {i} "
+        result_str += "|\n"
 
         return result_str
     
