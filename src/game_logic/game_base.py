@@ -58,13 +58,19 @@ class Game:
 
         return False
 
-    def check_winner(self, column, row):
+    def check_winner(self, column, row, player=None):
         # function is called after making a move to check nearby cells for a winning combination
         # returns True if the game is over and False otherwise
-        if self.current_player == 1:
-            board = self.board_first
+        if player is None:
+            if self.current_player == 1:
+                board = self.board_first
+            else:
+                board = self.board_second
         else:
-            board = self.board_second
+            if player == 1:
+                board = self.board_first
+            else:
+                board = self.board_second
 
         # check horizontal
         current_in_row = 0
@@ -117,6 +123,43 @@ class Game:
                     current_in_row = 0
 
         return False
+    
+    def is_oponent_winning_next_move(self):
+        """
+        Checks if the opponent has a winning move on their next turn.
+        Returns True if the opponent can win with their next move, otherwise False.
+        """
+        opponent = 3 - self.current_player  # Opponent's player number
+
+        for column in self.available_moves():
+            # Find the lowest available row in this column
+            row = 0
+            while row < self.board_height - 1 and not (self.board_first[row + 1][column] or self.board_second[row + 1][column]):
+                row += 1
+
+            # Temporarily place opponent's piece
+            if opponent == 1:
+                self.board_first[row][column] = True
+            else:
+                self.board_second[row][column] = True
+
+            # Check if this move wins the game
+            is_winning = self.check_winner(column, row, opponent)
+
+            # Undo the move
+            if opponent == 1:
+                self.board_first[row][column] = False
+            else:
+                self.board_second[row][column] = False
+
+            # Reset game state in case check_winner modified it
+            self.game_over = False
+            self.winner = 0
+
+            if is_winning:
+                return True  # Opponent has a winning move
+
+        return False  # No immediate winning move for the opponent
 
 
     def get_human_readable_board(self):

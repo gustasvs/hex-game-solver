@@ -58,7 +58,8 @@ def self_play(game, mcts):
         for i in range(len(visit_counts)):
             if i not in available_moves:
                 visit_counts[i] = 0
-            if current_move > 10 and not (action_probabilities[i] == np.max(action_probabilities)):
+            # make deterministic after some moves
+            if current_move > 7 and not (action_probabilities[i] == np.max(action_probabilities)):
                 visit_counts[i] = 0
 
         # print("VISIT COUNTS", visit_counts, "PROBABILITIES", action_probabilities)
@@ -76,7 +77,11 @@ def self_play(game, mcts):
             action = np.random.choice([i for i in range(7)], p=visit_counts / np.sum(visit_counts))
 
             board_state, _ = game.get_board_state_for_nn()
+
+            # uncomment for debugging
             # board_state = game.get_human_readable_board()
+            # recorded_game.append((board_state, visit_counts, 0))
+            
             recorded_game.append((board_state, action_probabilities, 0))
 
 
@@ -113,6 +118,7 @@ def self_play(game, mcts):
             # for i, action in enumerate(recorded_game):
             #     print("Move: ", i)
             #     print(action[0])
+            #     print("Player X" if i % 2 == 0 else "Player O")
             #     print("Action probabilities", action[1])
             #     print("Value target", action[2])
             
@@ -202,7 +208,7 @@ def main():
     # play_against_model(net)
     # exit()
 
-    mcts = MCTS(network=net, c_puct=1.0, num_simulations=MCTS_SIMULATIONS_PER_MOVE)
+    mcts = MCTS(network=net, c_puct=.5, num_simulations=MCTS_SIMULATIONS_PER_MOVE)
 
 
     for iteration in range(ITERATIONS):

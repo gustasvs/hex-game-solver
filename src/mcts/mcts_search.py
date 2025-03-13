@@ -1,5 +1,6 @@
 import copy
 import numpy as np
+import random
 
 class MCTSNode:
     """
@@ -30,14 +31,39 @@ class MCTSNode:
         For each valid action, create a new child node
         with the corresponding prior probability.
         """
+        forced_moves = 0
         for action, prob in action_priors.items():
             # Only create a child if the probability > 0
             if prob > 0:
                 # Copy game and make the move
                 new_game_state = copy.deepcopy(self.game)
                 new_game_state.make_move(action, new_game_state.current_player)
+
+                # ** Special case: if the parent node is a game-over state, this move can't be made as it loses
+                if self.parent is None and not new_game_state.game_over:
+                    for move in new_game_state.available_moves():
+                        oponents_game = copy.deepcopy(new_game_state)
+                        is_game_over = oponents_game.make_move(move, oponents_game.current_player)
+                        if is_game_over and oponents_game.winner != 0:
+                            forced_moves += 1
+                            prob = 0
+                            # print("Move ", move, "leads to forced loss")
+                            break
+                if prob == 0:
+                    continue
                 child_node = MCTSNode(new_game_state, prob, parent=self)
                 self.children[action] = child_node
+
+        if len(self.children) == 0 and len(action_priors) > 0:
+            # there were valid moves but all led to forced losses
+            # we still need to make atleast one move even if it loses
+            # so we make any move as long as it is valid because losing is inevitable
+            new_game_state = copy.deepcopy(self.game)
+            random_action = random.choice(list(action_priors.keys()))
+            new_game_state.make_move(random_action, new_game_state.current_player)
+            child_node = MCTSNode(new_game_state, 1, parent=self)
+            self.children[random_action] = child_node
+
 
     def update_stats(self, value):
         """
@@ -92,11 +118,8 @@ class MCTS:
         for _ in range(self.num_simulations):
             node = self._select(root)
 
-            # print("root current player", root.game.current_player)
-
-            # print("node current player", node.game.current_player)
-
-
+            # get value of the game stat that node holds from the perspective 
+            # of player that is moving in node
             value = self._simulate(node)
 
             if root.game.current_player != node.game.current_player:
@@ -132,6 +155,10 @@ class MCTS:
             best_score = -float('inf')
             best_action = None
             for action, child in current.children.items():
+
+                # if child.game.game_over and child.game.winner != current.game.current_player:
+                #     U = -100
+                # else:
                 # UCB formula
                 U = child.Q + self.c_puct * child.prior * \
                     np.sqrt(current.visit_count + 1) / (1 + child.visit_count)
@@ -149,28 +176,10 @@ class MCTS:
         """
         # If game is already over at this node, return outcome
         if node.game.game_over:
-        #     if node.game.winner == 1:
-        #         return 1.0
-        #     elif node.game.winner == 2:
-        #         return -1.0
-        #     else:
-        #         return 0.0
-            # Debug log for terminal state
-            # print(f"Terminal node: current_player={node.game.current_player}, winner={node.game.winner}")
             if node.game.winner == 0:
                 return 0.0
             else:
                 return 1.0
-            # if node.game.winner == node.game.current_player:
-            #     return 1.0
-            # elif node.game.winner == 0:  # assuming 0 indicates a draw
-            #     return 0.0
-            # else:
-            #     return -1.0
-
-        # Evaluate the position with the network
-
-        # print(f"Node.game.huamn_readable_board:\n{node.game.get_human_readable_board()}")
 
 
         policy, value = self._evaluate(node)
@@ -189,13 +198,19 @@ class MCTS:
         """
         current = node
         while current is not None:
-             # Debug log for backpropagation step
-            # print(f"Backpropagating at node (player={current.game.current_player}): value={value}")
+            
+            # # attempting to boost visit count artificially for forced moves
+            # if node.parent and node.parent.game.game_over:
+            #     # If the parent node is a game-over state, this was a forced move
+            #     current.visit_count += 10  # Boost visit count artificially
+            # confidence_weight = 1 / (1 + np.exp(-current.visit_count))  # Sigmoid function
+            # adjusted_value = (1 - confidence_weight) * current.Q + confidence_weight * value
             
             current.update_stats(value)
+
             current = current.parent
-            # For Connect4 in a zero-sum setting, we can invert value each step
-            # if we want each parent's perspective. For simplicity, skip that:
+            
+            # invert
             value = -value
 
     def _evaluate(self, node):
@@ -224,7 +239,17 @@ class MCTS:
         else:
             # edge case: all valid moves were masked
             # we should never reach here
-            masked_policy = {k: 1 / len(valid_moves) for k in valid_moves}   
+            masked_policy = {k: 1 / len(valid_moves) for k in valid_moves}
+
+        #  # **Apply Dirichlet noise at the root**
+        # if node.parent is None:  # Only apply noise at the root
+        #     epsilon = 0.25  # Exploration factor
+        #     alpha = 0.3  # Dirichlet distribution parameter
+        #     dirichlet_noise = np.random.dirichlet([alpha] * node.game.board_width)
+
+        #     # Mix the original policy with noise
+        #     for idx, action in enumerate(valid_moves):
+        #         masked_policy[action] = (1 - epsilon) * masked_policy[action] + epsilon * dirichlet_noise[idx]
 
         return masked_policy, value
 
