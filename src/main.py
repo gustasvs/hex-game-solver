@@ -7,12 +7,12 @@ from game_logic.game_base import Game
 from mcts.mcts_search import MCTS, MockNetwork
 from model import Model
 
-from utils.clean_up_console_logs import clean_up_console_logs
+# from utils.clean_up_console_logs import clean_up_console_logs
 
 
 from settings import *
 
-clean_up_console_logs()
+# clean_up_console_logs()
 
 
 def play_against_model(network):
