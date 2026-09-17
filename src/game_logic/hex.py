@@ -4,6 +4,10 @@ import sys
 import numpy as np
 
 from settings import HEX_BOARD_SIZE
+from pytorch_model import CustomNNUE
+import torch
+
+from game_logic.classes import Move
 
 class HexBoardState:
     _NEIGHBORS = ((-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0))
@@ -23,7 +27,7 @@ class HexBoardState:
         return sum(1 for row in range(self.size) for col in range(self.size) if self.p1[row][col] == 0 and self.p2[row][col] == 0)
     
     def get_legal_moves(self):
-        return [(row, col) for row in range(self.size) for col in range(self.size) if self.p1[row][col] == 0 and self.p2[row][col] == 0]
+        return [Move(row, col) for row in range(self.size) for col in range(self.size) if self.p1[row][col] == 0 and self.p2[row][col] == 0]
 
     def _has_connection(self, board, vertical):
         size = self.size
@@ -64,25 +68,44 @@ class HexBoardState:
     def get_state(self):
         return [self.p1, self.p2]
     
-    def rollout(self) -> int:
+    def model_based_rollout(self, model: CustomNNUE, shared_accumulator) -> tuple[float, list | None]:
+        if self.p1_win():
+            return 1, None
+        if self.p2_win():
+            return -1, None
         
+        if shared_accumulator is None:
+            return self.fast_random_rollout(), None
+
+        value, policy = model.forward(shared_accumulator)
+        
+        return value.item(), policy
+    
+    def fast_random_rollout(self) -> int:
+        
+        p1_stones = sum(map(sum, self.p1))
+        p2_stones = sum(map(sum, self.p2))
+        if p1_stones == p2_stones:
+            p1_to_move = True
+        elif p1_stones == p2_stones + 1:
+            p1_to_move = False
+        else:
+            raise ValueError(
+                "Invalid Hex state: Player 1 must have either the same number "
+                "of stones as Player 2 or exactly one more"
+            )
+
         remaining_moves = self.get_legal_moves()
         np.random.shuffle(remaining_moves)
-        p1_moves = []
-        p2_moves = []
-        if len(remaining_moves) % 2 == 0:
-            p1_moves = remaining_moves[::2]  # p1 takes every other move starting from the first
-            p2_moves = remaining_moves[1::2]  # p2 takes the remaining moves
-        else:
-            p1_moves = remaining_moves[1::2]  # p1 takes every other move starting from the second
-            p2_moves = remaining_moves[::2]  # p2 takes the remaining moves
-        
+
         rollout_state_p1 = [row[:] for row in self.p1]
         rollout_state_p2 = [row[:] for row in self.p2]
-        for row, col in p1_moves:
-            rollout_state_p1[row][col] = 1
-        for row, col in p2_moves:
-            rollout_state_p2[row][col] = 1
+        for move_index, (row, col) in enumerate(remaining_moves):
+            is_p1_move = p1_to_move == (move_index % 2 == 0)
+            if is_p1_move:
+                rollout_state_p1[row][col] = 1
+            else:
+                rollout_state_p2[row][col] = 1
         
         p1_win =  self._has_connection(rollout_state_p1, vertical=True)
         if p1_win:
@@ -98,10 +121,12 @@ class HexBoardState:
         #     return 1
         # if p2_win:
         #     return -1
-        sys.exit("Rollout ended without a winner ?!??! ERROR")
+        raise RuntimeError("Hex rollout ended without a winner")
     
     def make_move(self, move):
-        # move has x and y and p
+        # move[0] = 1 if p1 moves 2 if p2 moves
+        # move[1] = row
+        # move[2] = col
         if (move[0] == 1):
             self.p1[move[1]][move[2]] = 1
         else:
