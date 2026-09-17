@@ -68,7 +68,7 @@ class HexBoardState:
     def get_state(self):
         return [self.p1, self.p2]
     
-    def model_based_rollout(self, model: CustomNNUE, shared_accumulator) -> tuple[float, list | None]:
+    def model_based_rollout(self, model: CustomNNUE, shared_accumulator) -> tuple[float, torch.Tensor | None]:
         if self.p1_win():
             return 1, None
         if self.p2_win():
@@ -96,7 +96,9 @@ class HexBoardState:
             )
 
         remaining_moves = self.get_legal_moves()
-        np.random.shuffle(remaining_moves)
+        moves_np = np.array(remaining_moves)
+        np.random.shuffle(moves_np)
+        remaining_moves = moves_np.tolist()
 
         rollout_state_p1 = [row[:] for row in self.p1]
         rollout_state_p2 = [row[:] for row in self.p2]
@@ -127,7 +129,7 @@ class HexBoardState:
         # move[0] = 1 if p1 moves 2 if p2 moves
         # move[1] = row
         # move[2] = col
-        if (move[0] == 1):
+        if (move[0] is True):
             self.p1[move[1]][move[2]] = 1
         else:
             self.p2[move[1]][move[2]] = 1

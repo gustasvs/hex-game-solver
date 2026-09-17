@@ -33,14 +33,19 @@ def play_game(model: CustomNNUE) -> tuple:
             move_tree = MCTS(root, model)
             root.parent = None
                     
-            mtcs_results_node = move_tree.run()        
+            mtcs_results_node = move_tree.run()
+            
+            if not mtcs_results_node.children:
+                raise RuntimeError(
+                    "MCTS produced no children from a non-terminal state"
+                )
             # best_child = max(mtcs_results_node.children, key=lambda c: c.N, default=None)
             # for training always random with probability proportional to visit count
-            best_child = random.choices(
+            best_child: Node = random.choices(
                 mtcs_results_node.children,
                 weights=[c.N for c in mtcs_results_node.children],
                 k=1
-            )[0] if mtcs_results_node.children else None
+            )[0]
             
             total_visits = sum(c.N for c in mtcs_results_node.children)
             policy_target = [0.0] * (HEX_BOARD_SIZE ** 2)
@@ -61,9 +66,15 @@ def play_game(model: CustomNNUE) -> tuple:
             
             display_game(state, root)
             
-            state = best_child.state if best_child else state
-            root = best_child if best_child else root
+            if best_child is None:
+                raise RuntimeError(
+                    "MCTS returned no child for a non-terminal position"
+                )
+            
+            state = best_child.state
+            root = best_child
             root.parent = None
+            
         
         
         # for child in result.children:

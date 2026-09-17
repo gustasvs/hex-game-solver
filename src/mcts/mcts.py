@@ -180,7 +180,7 @@ class MCTS:
         self.root = root
         self.model = model
         self.c = 1.4 # exploration constant
-        self.max_iterations = 20000 # maximum number of iterations to perform
+        self.max_iterations = 40000 # maximum number of iterations to perform
         
         # DEBUG TIMERS
         self.total_selection_time = 0
