@@ -23,8 +23,14 @@ class NodeLegalMovesTest(unittest.TestCase):
         self.assertIn(second_move, first.legal_moves)
         self.assertIn(first_move, second.legal_moves)
         self.assertNotIn(second_move, second.legal_moves)
-        self.assertEqual(set(first.legal_moves), set(first.state.get_legal_moves()))
-        self.assertEqual(set(second.legal_moves), set(second.state.get_legal_moves()))
+        self.assertEqual(
+            {move.get_idx() for move in first.legal_moves},
+            {move.get_idx() for move in first.state.get_legal_moves()},
+        )
+        self.assertEqual(
+            {move.get_idx() for move in second.legal_moves},
+            {move.get_idx() for move in second.state.get_legal_moves()},
+        )
 
     def test_each_legal_move_is_expanded_once(self):
         root = Node(HexBoardState())
@@ -34,19 +40,22 @@ class NodeLegalMovesTest(unittest.TestCase):
 
         self.assertEqual(len(root.children), root.state.size ** 2)
         self.assertEqual(
-            {child.move_from_parent[1:] for child in root.children},
-            set(root.legal_moves),
+            {edge.move_from_parent[1:] for edge in root.children},
+            {(move.x, move.y) for move in root.legal_moves},
         )
         occupied_cells = {
             next(
                 (row, col)
-                for row in range(child.state.size)
-                for col in range(child.state.size)
-                if child.state.p1[row][col]
+                for row in range(edge.child.state.size)
+                for col in range(edge.child.state.size)
+                if edge.child.state.p1[row][col]
             )
-            for child in root.children
+            for edge in root.children
         }
-        self.assertEqual(occupied_cells, set(root.legal_moves))
+        self.assertEqual(
+            occupied_cells,
+            {(move.x, move.y) for move in root.legal_moves},
+        )
 
     def test_explicit_out_of_order_expansion_stays_correct(self):
         root = Node(HexBoardState())
@@ -55,8 +64,33 @@ class NodeLegalMovesTest(unittest.TestCase):
         child = root.create_child(selected_move)
 
         self.assertNotIn(selected_move, child.legal_moves)
-        self.assertEqual(set(child.legal_moves), set(child.state.get_legal_moves()))
+        self.assertEqual(
+            {move.get_idx() for move in child.legal_moves},
+            {move.get_idx() for move in child.state.get_legal_moves()},
+        )
         self.assertIn(selected_move, root.legal_moves)
+
+    def test_transpositions_share_nodes_but_keep_distinct_incoming_edges(self):
+        root = Node(HexBoardState())
+
+        def descend(indices):
+            node = root
+            last_edge = None
+            for index in indices:
+                move = next(move for move in node.legal_moves if move.idx == index)
+                last_edge = node.create_edge(move)
+                node = last_edge.child
+            return node, last_edge
+
+        first_node, first_edge = descend((0, 1, 2, 3))
+        second_node, second_edge = descend((2, 3, 0, 1))
+
+        self.assertIs(first_node, second_node)
+        self.assertIsNot(first_edge, second_edge)
+
+        first_edge.backpropagate(1)
+        self.assertEqual(first_edge.N, 1)
+        self.assertEqual(second_edge.N, 0)
 
 
 if __name__ == "__main__":

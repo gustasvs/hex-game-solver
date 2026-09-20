@@ -1,4 +1,5 @@
 
+import random
 import sys
 
 import numpy as np
@@ -8,6 +9,7 @@ from pytorch_model import CustomNNUE
 import torch
 
 from game_logic.classes import Move
+from mcts.bitboard_helpers import BOARD_MASK, BOTTOM_EDGE_MASK, LEFT_EDGE_MASK, RIGHT_EDGE_MASK, TOP_EDGE_MASK, has_bit_connection
 
 class HexBoardState:
     _NEIGHBORS = ((-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0))
@@ -22,6 +24,38 @@ class HexBoardState:
             self.p2 = [row[:] for row in state[1]]
         if move is not None:
             self.make_move(move)
+
+    @classmethod
+    def from_parent(cls, parent, move):
+        state = cls.__new__(cls)
+        state.size = parent.size
+        state.p1 = parent.p1.copy()
+        state.p2 = parent.p2.copy()
+
+        board = state.p1 if move[0] else state.p2
+        board[move[1]] = board[move[1]].copy()
+        board[move[1]][move[2]] = 1
+        return state
+
+    @classmethod
+    def from_bitboards(cls, p1_bits, p2_bits):
+        state = cls.__new__(cls)
+        state.size = HEX_BOARD_SIZE
+        state.p1 = [
+            [
+                (p1_bits >> (row * HEX_BOARD_SIZE + col)) & 1
+                for col in range(HEX_BOARD_SIZE)
+            ]
+            for row in range(HEX_BOARD_SIZE)
+        ]
+        state.p2 = [
+            [
+                (p2_bits >> (row * HEX_BOARD_SIZE + col)) & 1
+                for col in range(HEX_BOARD_SIZE)
+            ]
+            for row in range(HEX_BOARD_SIZE)
+        ]
+        return state
 
     def get_legal_moves_count(self):
         return sum(1 for row in range(self.size) for col in range(self.size) if self.p1[row][col] == 0 and self.p2[row][col] == 0)
@@ -68,61 +102,28 @@ class HexBoardState:
     def get_state(self):
         return [self.p1, self.p2]
     
-    def model_based_rollout(self, model: CustomNNUE, shared_accumulator) -> tuple[float, torch.Tensor | None]:
-        if self.p1_win():
-            return 1, None
-        if self.p2_win():
-            return -1, None
-        
-        if shared_accumulator is None:
-            return self.fast_random_rollout(), None
+    def fast_random_rollout_bits(self, p1_bits, p2_bits, p1_to_move) -> int:
+        empty = BOARD_MASK & ~(p1_bits | p2_bits)
+        moves = []
 
-        value, policy = model.forward(shared_accumulator)
-        
-        return value.item(), policy
-    
-    def fast_random_rollout(self) -> int:
-        
-        p1_stones = sum(map(sum, self.p1))
-        p2_stones = sum(map(sum, self.p2))
-        if p1_stones == p2_stones:
-            p1_to_move = True
-        elif p1_stones == p2_stones + 1:
-            p1_to_move = False
-        else:
-            raise ValueError(
-                "Invalid Hex state: Player 1 must have either the same number "
-                "of stones as Player 2 or exactly one more"
-            )
+        while empty:
+            bit = empty & -empty
+            moves.append(bit)
+            empty ^= bit
 
-        remaining_moves = self.get_legal_moves()
-        moves_np = np.array(remaining_moves)
-        np.random.shuffle(moves_np)
-        remaining_moves = moves_np.tolist()
+        random.shuffle(moves)
 
-        rollout_state_p1 = [row[:] for row in self.p1]
-        rollout_state_p2 = [row[:] for row in self.p2]
-        for move_index, (row, col) in enumerate(remaining_moves):
-            is_p1_move = p1_to_move == (move_index % 2 == 0)
-            if is_p1_move:
-                rollout_state_p1[row][col] = 1
+        for i, bit in enumerate(moves):
+            if p1_to_move == (i % 2 == 0):
+                p1_bits |= bit
             else:
-                rollout_state_p2[row][col] = 1
-        
-        p1_win =  self._has_connection(rollout_state_p1, vertical=True)
-        if p1_win:
+                p2_bits |= bit
+
+        if has_bit_connection(p1_bits, TOP_EDGE_MASK, BOTTOM_EDGE_MASK):
             return 1
-            
-        p2_win = self._has_connection(rollout_state_p2, vertical=False)
-        if p2_win:
+        if has_bit_connection(p2_bits, LEFT_EDGE_MASK, RIGHT_EDGE_MASK):
             return -1
-        
-        # if (p1_win and p2_win):
-        #     sys.exit("Both players won in rollout ?!??! ERROR")
-        # if p1_win:
-        #     return 1
-        # if p2_win:
-        #     return -1
+
         raise RuntimeError("Hex rollout ended without a winner")
     
     def make_move(self, move):
@@ -130,7 +131,9 @@ class HexBoardState:
         # move[1] = row
         # move[2] = col
         if (move[0] is True):
+            self.p1[move[1]] = self.p1[move[1]].copy()
             self.p1[move[1]][move[2]] = 1
         else:
+            self.p2[move[1]] = self.p2[move[1]].copy()
             self.p2[move[1]][move[2]] = 1
         return self

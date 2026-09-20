@@ -26,23 +26,24 @@ def display_game(state: HexBoardState, root: Node) -> None:
 
     candidate_moves = []
     current_board = p1 if root.is_p1_turn() else p2
-    for child in root.children:
+    for edge in root.children:
+        child = edge.child
         child_board = np.asarray(
             child.state.p1 if root.is_p1_turn() else child.state.p2,
             dtype=bool,
         )
         changed_cells = np.flatnonzero(child_board & ~current_board)
         if changed_cells.size:
-            candidate_moves.append((int(changed_cells[0]), child.N))
+            candidate_moves.append((int(changed_cells[0]), edge.N, edge.W))
 
     best_move = None
     if candidate_moves:
-        visits = np.fromiter((visits for _, visits in candidate_moves), dtype=float)
+        visits = np.fromiter((visits for _, visits, _ in candidate_moves), dtype=float)
         minimum = visits.min()
         spread = visits.max() - minimum
         strengths = (visits - minimum) / spread if spread else np.zeros_like(visits)
         teal = np.array((0.08, 0.68, 0.62, 1.0))
-        for (cell_index, _), strength in zip(candidate_moves, strengths):
+        for (cell_index, _, _), strength in zip(candidate_moves, strengths):
             colors[cell_index] = 1.0 + strength * (teal - 1.0)
         best_move = candidate_moves[int(np.argmax(visits))]
 
@@ -80,8 +81,8 @@ def display_game(state: HexBoardState, root: Node) -> None:
     ax.add_collection(LineCollection(blue_edges, colors="white", linewidths=9))
     ax.add_collection(LineCollection(red_edges, colors="#d92626", linewidths=5))
     ax.add_collection(LineCollection(blue_edges, colors="#2659d9", linewidths=5))
-    if best_move is not None:
-        cell_index, visit_count = best_move
+    for move in candidate_moves:
+        cell_index, visit_count, value = move
         # marker = Circle(
         #     centers[cell_index],
         #     radius=0.45,
@@ -93,7 +94,7 @@ def display_game(state: HexBoardState, root: Node) -> None:
         # ax.add_patch(marker)
         ax.text(
             *centers[cell_index],
-            str(visit_count),
+            str(round(value, 2)),
             ha="center",
             va="center",
             color="#263238",
