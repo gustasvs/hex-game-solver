@@ -13,6 +13,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from game import play_game
 from game_logic.hex import HexBoardState
 from mcts.mcts import MCTS, Node
+from mcts.bitboard_helpers import (
+    canonical_evaluation_key,
+    rotate_bitboard_180,
+    rotate_policy_180,
+)
 from pytorch_model import CustomNNUE
 from settings import DEVICE, HEX_BOARD_SIZE
 
@@ -113,6 +118,76 @@ class PolicyTest(unittest.TestCase):
         for index, probability in enumerate(node.stored_policy):
             if index not in legal_indices:
                 self.assertEqual(probability, 0.0)
+
+
+class EvaluationCacheSymmetryTest(unittest.TestCase):
+    def test_rotated_positions_have_the_same_canonical_key(self):
+        p1_bits = (1 << 0) | (1 << 7)
+        p2_bits = (1 << 3) | (1 << 12)
+        rotated_p1 = rotate_bitboard_180(p1_bits)
+        rotated_p2 = rotate_bitboard_180(p2_bits)
+
+        key, _ = canonical_evaluation_key(p1_bits, p2_bits)
+        rotated_key, _ = canonical_evaluation_key(rotated_p1, rotated_p2)
+
+        self.assertEqual(key, rotated_key)
+        self.assertEqual(
+            rotate_bitboard_180(rotated_p1),
+            p1_bits,
+        )
+        self.assertEqual(
+            rotate_bitboard_180(rotated_p2),
+            p2_bits,
+        )
+
+    def test_policy_rotation_is_its_own_inverse(self):
+        policy = list(range(HEX_BOARD_SIZE * HEX_BOARD_SIZE))
+        self.assertEqual(
+            rotate_policy_180(rotate_policy_180(policy)),
+            policy,
+        )
+
+    def test_rotated_position_reuses_evaluation_and_rotates_policy(self):
+        evaluation_cache = {}
+        model = CustomNNUE().to(DEVICE)
+        forward_calls = 0
+        policy_logits = torch.arange(
+            HEX_BOARD_SIZE * HEX_BOARD_SIZE,
+            dtype=torch.float32,
+            device=DEVICE,
+        )
+
+        def counted_forward(accumulator, inference_parameters=None):
+            nonlocal forward_calls
+            forward_calls += 1
+            return torch.tensor([0.25], device=DEVICE), policy_logits
+
+        model.forward = counted_forward
+
+        state = state_after([(True, 0, 1), (False, 1, 3)])
+        first = Node(state, move_index=2, evaluation_cache=evaluation_cache)
+        MCTS(first, model, 1).run()
+
+        rotated_state = HexBoardState.from_bitboards(
+            rotate_bitboard_180(first.p1_bits),
+            rotate_bitboard_180(first.p2_bits),
+        )
+        rotated = Node(
+            rotated_state,
+            move_index=2,
+            evaluation_cache=evaluation_cache,
+        )
+        rotated_search = MCTS(rotated, model, 1)
+        rotated_search.run()
+
+        self.assertEqual(forward_calls, 1)
+        self.assertEqual(rotated_search.evaluation_cache_hits, 1)
+        self.assertEqual(len(evaluation_cache), 1)
+        self.assertEqual(
+            rotated.stored_policy,
+            rotate_policy_180(first.stored_policy),
+        )
+        self.assertEqual(rotated.stored_value, first.stored_value)
 
 
 class TreeTest(unittest.TestCase):

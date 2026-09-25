@@ -16,6 +16,14 @@ from matplotlib.colors import Normalize
 from matplotlib.patches import RegularPolygon
 
 from game_logic.hex import HexBoardState
+from mcts.mcts import Node
+from mcts.bitboard_helpers import (
+    BOTTOM_EDGE_MASK,
+    LEFT_EDGE_MASK,
+    RIGHT_EDGE_MASK,
+    TOP_EDGE_MASK,
+    has_bit_connection,
+)
 from pytorch_model import CustomNNUE
 from settings import DEVICE, HEX_BOARD_SIZE
 
@@ -53,9 +61,14 @@ def load_most_recent_model() -> tuple[CustomNNUE, Path]:
     return model, weights_path
 
 
-def make_connecting_path(p1: bool, rng: random.Random) -> list[Coordinate]:
+def make_connecting_path(
+    p1: bool,
+    rng: random.Random,
+    size: int = HEX_BOARD_SIZE,
+) -> list[Coordinate]:
     """Make a varied connected path between the current player's two sides."""
-    size = HEX_BOARD_SIZE
+    if size < 1:
+        raise ValueError("board size must be positive")
 
     if p1:
         row = 0
@@ -107,20 +120,42 @@ def make_connecting_path(p1: bool, rng: random.Random) -> list[Coordinate]:
     return path
 
 
+def node_for_position(state: HexBoardState) -> Node:
+    """Create a search node with the ply inferred from the occupied cells."""
+    move_index = sum(map(sum, state.p1)) + sum(map(sum, state.p2))
+    return Node(state, move_index=move_index)
+
+
+def position_has_winner(state: HexBoardState) -> bool:
+    """Check both players, including synthetically generated positions."""
+    node = node_for_position(state)
+    return (
+        has_bit_connection(node.p1_bits, TOP_EDGE_MASK, BOTTOM_EDGE_MASK)
+        or has_bit_connection(node.p2_bits, LEFT_EDGE_MASK, RIGHT_EDGE_MASK)
+    )
+
+
 def immediate_winning_moves(
     state: HexBoardState,
     p1_to_move: bool,
 ) -> set[Coordinate]:
     """Return every legal placement that immediately wins for the mover."""
     winning_moves = set()
+    root = node_for_position(state)
 
-    for move in state.get_legal_moves():
-        next_state = HexBoardState.from_parent(
-            state,
-            (p1_to_move, move.x, move.y),
+    if root.is_p1_turn() != p1_to_move:
+        raise ValueError(
+            "p1_to_move is inconsistent with the position's stone counts"
         )
-        won = next_state.p1_win() if p1_to_move else next_state.p2_win()
-        if won:
+
+    expected_outcome = 1 if p1_to_move else -1
+
+    for move in root.legal_moves:
+        child = root.create_edge(move).child
+        if (
+            child.is_terminal()
+            and child.stored_terminal_outcome == expected_outcome
+        ):
             winning_moves.add((move.x, move.y))
 
     return winning_moves
@@ -133,20 +168,35 @@ def generate_position(
 ) -> tuple[HexBoardState, Coordinate, set[Coordinate]]:
     """Generate a balanced non-terminal position with a one-cell path gap."""
     size = HEX_BOARD_SIZE
+    if size < 2:
+        raise ValueError(
+            "winning-policy examples require a Hex board of at least 2x2"
+        )
+
+    cell_count = size * size
     all_cells = [(row, col) for row in range(size) for col in range(size)]
 
     for _ in range(10_000):
-        path = make_connecting_path(p1_to_move, rng)
-        intended_gap = rng.choice(path[1:-1])
+        path = make_connecting_path(p1_to_move, rng, size)
+        gap_candidates = path[1:-1] or path
+        intended_gap = rng.choice(gap_candidates)
         current_stones = set(path)
         current_stones.remove(intended_gap)
 
         # Keep the board busy enough to resemble a mid-game position while
-        # retaining the move counts of a legal position.
-        minimum_count = max(len(current_stones), size + 2)
-        maximum_count = min(minimum_count + 5, 18)
+        # retaining legal move counts and at least the intended gap as empty.
+        opponent_extra = 0 if p1_to_move else 1
+        maximum_legal_count = (cell_count - 1 - opponent_extra) // 2
+        if len(current_stones) > maximum_legal_count:
+            continue
+
+        minimum_count = max(len(current_stones), max(1, cell_count // 4))
+        maximum_count = min(
+            maximum_legal_count,
+            max(minimum_count, cell_count // 3),
+        )
         current_count = rng.randint(minimum_count, maximum_count)
-        opponent_count = current_count if p1_to_move else current_count + 1
+        opponent_count = current_count + opponent_extra
 
         available = [
             cell
@@ -178,7 +228,7 @@ def generate_position(
             p2[row][col] = 1
 
         state = HexBoardState(state=(p1, p2))
-        if state.p1_win() or state.p2_win():
+        if position_has_winner(state):
             continue
 
         winning_moves = immediate_winning_moves(state, p1_to_move)
@@ -206,9 +256,16 @@ def model_policy(
     p1_to_move: bool,
 ) -> tuple[float, np.ndarray]:
     """Run one network evaluation and softmax only across legal moves."""
+    size = state.size
     with torch.inference_mode():
         accumulator = model.calculate_accumulator(state.get_state(), p1_to_move)
         value, logits = model(accumulator)
+
+        if logits.numel() != size * size:
+            raise ValueError(
+                f"model has {logits.numel()} policy outputs for a "
+                f"{size}x{size} board"
+            )
 
         legal_indices = [move.idx for move in state.get_legal_moves()]
         legal_tensor = torch.tensor(legal_indices, device=logits.device)
@@ -216,8 +273,8 @@ def model_policy(
         probabilities[legal_tensor] = torch.softmax(logits[legal_tensor], dim=0)
 
     return value.item(), probabilities.reshape(
-        HEX_BOARD_SIZE,
-        HEX_BOARD_SIZE,
+        size,
+        size,
     ).cpu().numpy()
 
 
@@ -252,8 +309,7 @@ def make_examples(
     return examples
 
 
-def board_geometry() -> tuple[np.ndarray, np.ndarray]:
-    size = HEX_BOARD_SIZE
+def board_geometry(size: int = HEX_BOARD_SIZE) -> tuple[np.ndarray, np.ndarray]:
     row, col = np.indices((size, size))
     centers = np.column_stack((
         np.sqrt(3) * (col.ravel() + row.ravel() / 2),
@@ -264,8 +320,7 @@ def board_geometry() -> tuple[np.ndarray, np.ndarray]:
     return centers, centers[:, None, :] + 0.98 * corners
 
 
-def draw_player_edges(ax, hexagons: np.ndarray) -> None:
-    size = HEX_BOARD_SIZE
+def draw_player_edges(ax, hexagons: np.ndarray, size: int) -> None:
     red_edges = []
     blue_edges = []
     gap = 0.14
@@ -299,16 +354,23 @@ def draw_example(
     example_number: int,
     probability_norm: Normalize,
 ) -> None:
-    centers, hexagons = board_geometry()
+    size = example.state.size
+    if example.policy.shape != (size, size):
+        raise ValueError(
+            f"policy shape {example.policy.shape} does not match "
+            f"the {size}x{size} board"
+        )
+
+    centers, hexagons = board_geometry(size)
     p1 = np.asarray(example.state.p1, dtype=bool)
     p2 = np.asarray(example.state.p2, dtype=bool)
     occupied = p1 | p2
-    colors = np.ones((HEX_BOARD_SIZE * HEX_BOARD_SIZE, 4))
+    colors = np.ones((size * size, 4))
     color_map = plt.colormaps["YlGn"]
 
-    for row in range(HEX_BOARD_SIZE):
-        for col in range(HEX_BOARD_SIZE):
-            index = row * HEX_BOARD_SIZE + col
+    for row in range(size):
+        for col in range(size):
+            index = row * size + col
             if p1[row, col]:
                 colors[index] = (0.85, 0.15, 0.15, 1.0)
             elif p2[row, col]:
@@ -324,14 +386,14 @@ def draw_example(
             linewidths=0.8,
         )
     )
-    draw_player_edges(ax, hexagons)
+    draw_player_edges(ax, hexagons, size)
 
-    for row in range(HEX_BOARD_SIZE):
-        for col in range(HEX_BOARD_SIZE):
+    for row in range(size):
+        for col in range(size):
             if occupied[row, col]:
                 continue
 
-            index = row * HEX_BOARD_SIZE + col
+            index = row * size + col
             probability = example.policy[row, col]
             is_winner = (row, col) in example.winning_moves
             text = f"{probability:.1%}"
@@ -381,12 +443,18 @@ def display_examples(
     weights_path: Path,
     save_path: Path | None,
 ) -> None:
-    columns = min(5, len(examples))
+    board_sizes = {example.state.size for example in examples}
+    if len(board_sizes) != 1:
+        raise ValueError("all displayed examples must use the same board size")
+
+    size = board_sizes.pop()
+    columns = min(len(examples), max(1, 25 // size))
     rows = math.ceil(len(examples) / columns)
+    panel_size = min(8.0, max(4.0, 0.55 * size))
     figure, axes = plt.subplots(
         rows,
         columns,
-        figsize=(4.0 * columns, 4.1 * rows),
+        figsize=(panel_size * columns, (panel_size + 0.1) * rows),
         squeeze=False,
         layout="constrained",
     )

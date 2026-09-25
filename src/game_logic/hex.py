@@ -62,42 +62,6 @@ class HexBoardState:
     
     def get_legal_moves(self):
         return [Move(row, col) for row in range(self.size) for col in range(self.size) if self.p1[row][col] == 0 and self.p2[row][col] == 0]
-
-    def _has_connection(self, board, vertical):
-        size = self.size
-        if vertical:
-            stack = [(0, col) for col in range(size) if board[0][col]]
-        else:
-            stack = [(row, 0) for row in range(size) if board[row][0]]
-
-        visited = [[False] * size for _ in range(size)]
-        for row, col in stack:
-            visited[row][col] = True
-
-        while stack:
-            row, col = stack.pop()
-            if (vertical and row == size - 1) or (not vertical and col == size - 1):
-                return True
-
-            for row_delta, col_delta in self._NEIGHBORS:
-                next_row = row + row_delta
-                next_col = col + col_delta
-                if (0 <= next_row < size and 0 <= next_col < size
-                        and board[next_row][next_col]
-                        and not visited[next_row][next_col]):
-                    visited[next_row][next_col] = True
-                    stack.append((next_row, next_col))
-
-        return False
-
-    def p1_win(self):
-        return self._has_connection(self.p1, vertical=True)
-
-    def p2_win(self):
-        return self._has_connection(self.p2, vertical=False)
-
-    def is_terminal(self):
-        return self.p1_win() or self.p2_win() or self.get_legal_moves_count() == 0
     
     def get_state(self):
         return [self.p1, self.p2]

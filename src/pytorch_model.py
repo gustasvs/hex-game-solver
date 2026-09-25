@@ -9,7 +9,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from settings import HEX_BOARD_SIZE, DEVICE, TRAIN_DEVICE
 
 EMBEDDING_DIM = 128
-FIRST_LAYER = 8
+FIRST_LAYER = 32
 SECOND_LAYER = 32
 
 P1_OFFSET = 0
@@ -120,6 +120,7 @@ class CustomNNUE(nn.Module):
             policy_weight,
         ) = inference_parameters
 
+        x = torch.relu(x)
         x = torch.addmv(first_bias, first_weight, x)
         x.relu_()
         x = torch.addmv(second_bias, second_weight, x)
@@ -151,8 +152,8 @@ class CustomNNUE(nn.Module):
     def fit_to(
         self,
         game_data,
-        epochs=10,
-        batch_size=256,
+        epochs=100,
+        batch_size=128,
         num_workers=0,
     ):
         features = []
@@ -321,6 +322,8 @@ class CustomNNUE(nn.Module):
         #
         # This is exactly the sum of every active embedding.
         x = feature_batch @ self.cached_embeddings.weight
+        
+        x = F.relu(x)
 
         x = F.linear(
             x,

@@ -94,7 +94,7 @@ def display_game(state: HexBoardState, root: Node) -> None:
         # ax.add_patch(marker)
         ax.text(
             *centers[cell_index],
-            str(round(value, 2)),
+            str(round(visit_count, 2)),
             ha="center",
             va="center",
             color="#263238",

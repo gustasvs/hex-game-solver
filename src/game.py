@@ -30,25 +30,33 @@ def play_game(model: CustomNNUE | None, eval_cache: dict | None = None, display:
     values = []
     moves_played = 0
     with torch.inference_mode():
-        while not state.is_terminal():
+        while not root.is_terminal():
             
-            move_tree = MCTS(root, model, 20_000 if model is None else 5_000)
+            move_tree = MCTS(root, model, 10_000 if model is None else 2_000)
             mtcs_results_node = move_tree.run()
             
             if not mtcs_results_node.children:
                 raise RuntimeError(
                     "MCTS produced no children from a non-terminal state"
                 )
+                
+            # for child in mtcs_results_node.children:
+            #     print(f"Child move: {child.move_from_parent}, Visits: {child.N}")
             
-            if root.move_index > 10 or deterministic:
-                # deterministic later in the game
-                best_edge = max(mtcs_results_node.children, key=lambda edge: edge.N)
-            else:
+            
+            
+            if root.move_index < 4 and not deterministic:
+                best_edge = random.choice(mtcs_results_node.children)
+            elif root.move_index < 10 and not deterministic:
                 best_edge = random.choices(
                     mtcs_results_node.children,
                     weights=[edge.N for edge in mtcs_results_node.children],
                     k=1
                 )[0]
+            else:
+                # deterministic later in the game
+                best_edge = max(mtcs_results_node.children, key=lambda edge: edge.N)
+            
             # print([edge.N for edge in mtcs_results_node.children])
             # print(f"Best child move: {best_edge.move_from_parent}")
             
@@ -95,7 +103,7 @@ def play_game(model: CustomNNUE | None, eval_cache: dict | None = None, display:
     if display:
         display_game(state, root)
     
-    winner_value = +1 if state.p1_win() else -1
+    winner_value = +1 if root.is_p1_win() else -1
     values = [winner_value for _ in range(len(states))]
 
     return states, policies, values
@@ -120,8 +128,8 @@ if __name__ == "__main__":
     model = CustomNNUE(weights=weights).to(DEVICE)
     
     try:
-        # play_game(None, {}, True, True)
-        play_game(model, {}, True, True)
+        # play_game(None, {}, True, False)
+        play_game(model, {}, True, False)
     except KeyboardInterrupt:
         print("Game interrupted by user.")
         sys.exit(0)

@@ -16,10 +16,18 @@ from collections.abc import Iterable
 np.random.seed(42)
 
 PathMove = tuple[bool, int, int]
-from mcts.bitboard_helpers import has_bit_connection, LEFT_EDGE_MASK, RIGHT_EDGE_MASK, TOP_EDGE_MASK, BOTTOM_EDGE_MASK
+from mcts.bitboard_helpers import (
+    BOTTOM_EDGE_MASK,
+    LEFT_EDGE_MASK,
+    RIGHT_EDGE_MASK,
+    TOP_EDGE_MASK,
+    canonical_evaluation_key,
+    has_bit_connection,
+    rotate_policy_180,
+)
 
 class Edge:
-    def __init__(self, parent, child, action: Move, prior=0, is_transposition=False):
+    def __init__(self, parent: Node, child: Node, action: Move, prior=0, is_transposition=False):
         self.parent = parent
         self.child = child
         self.action = action
@@ -137,9 +145,6 @@ class Node:
             else:
                 self.unexpanded_count = None
         return edge
-
-    def create_child(self, move) -> Node:
-        return self.create_edge(move).child
     
     def get_best_action_using_puct(self, c) -> Move:
         if self.unexpanded_count is not None:
@@ -304,6 +309,11 @@ class Node:
 
         return self.stored_terminal
     
+    def is_p1_win(self):
+        if self.stored_terminal is None:
+            self.is_terminal()
+        return self.stored_terminal_outcome == 1
+    
     # LOGGING
     
     def print_visits_and_score(self):
@@ -426,7 +436,10 @@ class MCTS:
 
             else:
                 # TRADITIONAL PUCT WHEN MODEL EXISTS
-                position_key = (selected.p1_bits, selected.p2_bits)
+                evaluation_key, position_is_rotated = canonical_evaluation_key(
+                    selected.p1_bits,
+                    selected.p2_bits,
+                )
                 if selected.stored_value is not None:
                     outcome = selected.stored_value
                     policy = None
@@ -434,7 +447,7 @@ class MCTS:
                     if selected.stored_policy is not None:
                         self.nn_evaluations_cached += 1
                 else:
-                    cached_evaluation = selected.evaluation_cache.get(position_key)
+                    cached_evaluation = selected.evaluation_cache.get(evaluation_key)
                     if cached_evaluation is None:
                         outcome, policy = selected.rollout(
                             self.model,
@@ -448,6 +461,8 @@ class MCTS:
                     else:
                         outcome, cached_policy = cached_evaluation
                         selected.stored_value = outcome
+                        if position_is_rotated:
+                            cached_policy = rotate_policy_180(cached_policy)
                         selected._install_policy(cached_policy)
                         policy = None
                         self.evaluation_cache_hits += 1
@@ -460,8 +475,11 @@ class MCTS:
             if policy is not None:
                 selected.store_policy(policy)
                 selected.stored_value = outcome
-                selected.evaluation_cache[position_key] = (
-                    outcome, selected.stored_policy
+                cached_policy = selected.stored_policy
+                if position_is_rotated:
+                    cached_policy = rotate_policy_180(cached_policy)
+                selected.evaluation_cache[evaluation_key] = (
+                    outcome, cached_policy
                 )
             for edge in reversed(selected_path):
                 edge.backpropagate(outcome)
@@ -498,12 +516,18 @@ class MCTS:
                 is_terminal = node.is_terminal()
             if is_terminal or node.stored_policy is None:
                 break
-            best_action = node.get_best_action_using_puct(self.c)
+            
+            if node.unexpanded_count is not None and node.unexpanded_count > 0:
+                # expand each child atleast once
+                best_action = node.legal_moves[node.unexpanded_count - 1]
+                
+            else:
+                best_action = node.get_best_action_using_puct(self.c)
 
             self.calls_to_best_child_by_uct += 1
             self.total_uct_children_examined += len(node.children)
 
-            edge = node.move_edge_map.get(best_action.idx)
+            edge: Edge | None = node.move_edge_map.get(best_action.idx)
             created_edge = edge is None
             if created_edge:
                 edge = node.create_edge(best_action)
