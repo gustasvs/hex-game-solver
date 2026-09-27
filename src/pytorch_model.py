@@ -277,14 +277,15 @@ class CustomNNUE(nn.Module):
 
                 total_value_loss += value_loss.item() * current_batch_size
 
-            print(
-                f"Epoch {epoch + 1}/{epochs} | "
-                f"Loss: {total_loss / total_samples:.4f} | "
-                f"Policy: "
-                f"{total_policy_loss / total_samples:.4f} | "
-                f"Value: "
-                f"{total_value_loss / total_samples:.4f}"
-            )
+            if epoch % 20 == 0 or epoch == epochs - 1:
+                print(
+                    f"Epoch {epoch + 1}/{epochs} | "
+                    f"Loss: {total_loss / total_samples:.4f} | "
+                    f"Policy: "
+                    f"{total_policy_loss / total_samples:.4f} | "
+                    f"Value: "
+                    f"{total_value_loss / total_samples:.4f}"
+                )
 
         # Your MCTS inference currently expects the model on DEVICE.
         self.to(DEVICE)

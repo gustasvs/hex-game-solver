@@ -10,7 +10,7 @@ from game import play_game
 from pytorch_model import CustomNNUE
 from settings import DEVICE, HEX_BOARD_SIZE
 
-LEARNING_ITERATIONS = 50
+LEARNING_ITERATIONS = 30
 
 SELF_PLAY_GAMES = 1_000
 
@@ -19,7 +19,7 @@ TRAIN_NEW = False
 # games to keep to nnot only trian on most recent model weak spots
 GAME_BUFFER_LEN = SELF_PLAY_GAMES * 4
 
-SELF_PLAY_WORKERS = max(1, min(19, os.cpu_count() or 1))
+SELF_PLAY_WORKERS = max(1, min(16, os.cpu_count() or 1))
 # print(f"Using {} self-play workers.")
 
 WEIGHTS_PATH = f"weights/board_size{HEX_BOARD_SIZE}/model_weights.pt"

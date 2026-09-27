@@ -12,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from game import play_game
 from game_logic.hex import HexBoardState
-from mcts.mcts import MCTS, Node
+from mcts.mcts import EvaluationCache, MCTS, Node, NodeTable, TreeContext
 from mcts.bitboard_helpers import (
     canonical_evaluation_key,
     rotate_bitboard_180,
@@ -88,11 +88,10 @@ class AccumulatorTest(unittest.TestCase):
 
     def test_mcts_stored_accumulators_do_not_retain_autograd_graphs(self):
         model = CustomNNUE().to(DEVICE)
-        root = Node(HexBoardState())
-        search = MCTS(root, model, 1)
-
-        root.stored_policy = [1.0] * (HEX_BOARD_SIZE * HEX_BOARD_SIZE)
-        child, _ = search.select(root)
+        root = Node(HexBoardState(), node_cache=NodeTable())
+        search = MCTS(root, model, 2)
+        search.run()
+        child = root.children[0].child
 
         self.assertFalse(root.stored_accumulator.requires_grad)
         self.assertIsNone(root.stored_accumulator.grad_fn)
@@ -102,6 +101,130 @@ class AccumulatorTest(unittest.TestCase):
                 self.assertIsNone(move_delta.grad_fn)
         self.assertFalse(child.stored_accumulator.requires_grad)
         self.assertIsNone(child.stored_accumulator.grad_fn)
+
+    def test_shared_cache_hit_does_not_materialize_child_accumulator(self):
+        model = CustomNNUE().to(DEVICE)
+        evaluation_cache = {}
+        root = Node(HexBoardState(), evaluation_cache=evaluation_cache)
+        child = root.create_edge(0).child
+        root_policy = [0.0] * (HEX_BOARD_SIZE * HEX_BOARD_SIZE)
+        root_policy[0] = 1.0
+        root._install_policy(root_policy)
+        child_key, _ = canonical_evaluation_key(child.p1_bits, child.p2_bits)
+        evaluation_cache[child_key] = (0.25, [1 / 24] * 25)
+        forward_calls = 0
+
+        def counted_forward(accumulator, inference_parameters=None):
+            nonlocal forward_calls
+            forward_calls += 1
+            return torch.tensor([0.0], device=DEVICE), torch.zeros(
+                HEX_BOARD_SIZE * HEX_BOARD_SIZE,
+                device=DEVICE,
+            )
+
+        model.forward = counted_forward
+        search = MCTS(root, model, 1)
+        search.run()
+
+        self.assertEqual(forward_calls, 0)
+        self.assertEqual(search.cross_game_cache_hits, 1)
+        self.assertEqual(search.accumulator_creations, 1)  # root only
+        self.assertIsNone(child.stored_accumulator)
+
+    def test_cache_hit_then_expand_materializes_internal_hit_once(self):
+        model = CustomNNUE().to(DEVICE)
+        evaluation_cache = {}
+        root = Node(HexBoardState(), evaluation_cache=evaluation_cache)
+        child = root.create_edge(0).child
+        root_policy = [0.0] * (HEX_BOARD_SIZE * HEX_BOARD_SIZE)
+        root_policy[0] = 1.0
+        root._install_policy(root_policy)
+        child_key, _ = canonical_evaluation_key(child.p1_bits, child.p2_bits)
+        evaluation_cache[child_key] = (0.25, [1 / 24] * 25)
+        forward_calls = 0
+        forwarded_accumulators = []
+        original_forward = model.forward
+
+        def counted_forward(accumulator, inference_parameters=None):
+            nonlocal forward_calls
+            forward_calls += 1
+            forwarded_accumulators.append(accumulator.detach().clone())
+            return original_forward(accumulator, inference_parameters)
+
+        model.forward = counted_forward
+        MCTS(root, model, 1).run()
+        self.assertIsNone(child.stored_accumulator)
+
+        search = MCTS(root, model, 1)
+        search.run()
+        grandchild = child.children[0].child
+
+        self.assertEqual(forward_calls, 1)
+        self.assertEqual(search.accumulator_creations, 2)
+        self.assertIsNotNone(child.stored_accumulator)
+        self.assertIsNotNone(grandchild.stored_accumulator)
+        child_reconstructed = model.calculate_accumulator(
+            child.state.get_state(),
+            child.is_p1_turn(),
+        ).detach()
+        torch.testing.assert_close(child.stored_accumulator, child_reconstructed)
+        reconstructed = model.calculate_accumulator(
+            grandchild.state.get_state(),
+            grandchild.is_p1_turn(),
+        ).detach()
+        torch.testing.assert_close(grandchild.stored_accumulator, reconstructed)
+        expected_value, expected_policy = original_forward(
+            reconstructed,
+            search.inference_parameters,
+        )
+        actual_value, actual_policy = original_forward(
+            forwarded_accumulators[0],
+            search.inference_parameters,
+        )
+        torch.testing.assert_close(actual_value, expected_value)
+        torch.testing.assert_close(actual_policy, expected_policy)
+
+    def test_accumulator_creation_counter_includes_root_and_new_child(self):
+        model = CustomNNUE().to(DEVICE)
+        search = MCTS(Node(HexBoardState()), model, 2)
+
+        search.run()
+
+        self.assertEqual(search.accumulator_creations, 2)
+
+    def test_promoted_child_reuses_model_search_context(self):
+        model = CustomNNUE().to(DEVICE)
+        shared_evaluation_cache = {}
+        root = Node(HexBoardState(), evaluation_cache=shared_evaluation_cache)
+
+        with (
+            patch.object(
+                model,
+                "calculate_move_deltas",
+                wraps=model.calculate_move_deltas,
+            ) as move_deltas,
+            patch.object(
+                model,
+                "get_inference_parameters",
+                wraps=model.get_inference_parameters,
+            ) as inference_parameters,
+        ):
+            first_search = MCTS(root, model, 2)
+            first_search.run()
+            promoted = root.children[0].child
+            second_search = MCTS(promoted, model, 1)
+            second_search.run()
+            next_game_search = MCTS(
+                Node(HexBoardState(), evaluation_cache=shared_evaluation_cache),
+                model,
+                1,
+            )
+
+        self.assertIs(promoted.search_context, first_search.search_context)
+        self.assertIs(second_search.search_context, first_search.search_context)
+        self.assertIs(next_game_search.search_context, first_search.search_context)
+        self.assertEqual(move_deltas.call_count, 1)
+        self.assertEqual(inference_parameters.call_count, 1)
 
 
 class PolicyTest(unittest.TestCase):
@@ -166,7 +289,8 @@ class EvaluationCacheSymmetryTest(unittest.TestCase):
 
         state = state_after([(True, 0, 1), (False, 1, 3)])
         first = Node(state, move_index=2, evaluation_cache=evaluation_cache)
-        MCTS(first, model, 1).run()
+        first_search = MCTS(first, model, 1)
+        first_search.run()
 
         rotated_state = HexBoardState.from_bitboards(
             rotate_bitboard_180(first.p1_bits),
@@ -181,7 +305,13 @@ class EvaluationCacheSymmetryTest(unittest.TestCase):
         rotated_search.run()
 
         self.assertEqual(forward_calls, 1)
+        self.assertEqual(first_search.cross_game_cache_misses, 1)
+        self.assertEqual(first_search.cross_game_cache_misses_by_move_index[2], 1)
+        self.assertEqual(first_search.cross_game_cache_hits, 0)
         self.assertEqual(rotated_search.evaluation_cache_hits, 1)
+        self.assertEqual(rotated_search.cross_game_cache_hits, 1)
+        self.assertEqual(rotated_search.cross_game_cache_hits_by_move_index[2], 1)
+        self.assertEqual(rotated_search.cross_game_cache_misses, 0)
         self.assertEqual(len(evaluation_cache), 1)
         self.assertEqual(
             rotated.stored_policy,
@@ -189,12 +319,83 @@ class EvaluationCacheSymmetryTest(unittest.TestCase):
         )
         self.assertEqual(rotated.stored_value, first.stored_value)
 
+    def test_node_value_hits_are_not_shared_cache_hits(self):
+        model = CustomNNUE().to(DEVICE)
+        root = Node(HexBoardState())
+        root.stored_value = 0.125
+
+        search = MCTS(root, model, 1)
+        search.run()
+
+        self.assertEqual(search.node_value_hits, 1)
+        self.assertEqual(search.cross_game_cache_hits, 0)
+        self.assertEqual(search.cross_game_cache_misses, 0)
+        self.assertEqual(search.evaluation_cache_hits, 1)
+
 
 class TreeTest(unittest.TestCase):
+    def test_descendants_share_one_tree_context_and_ply_bucketed_table(self):
+        root = Node(HexBoardState(), node_cache=NodeTable())
+        child = root.create_edge(0).child
+        grandchild = child.create_edge(1).child
+
+        self.assertIs(root.tree_context, child.tree_context)
+        self.assertIs(child.tree_context, grandchild.tree_context)
+        self.assertIsInstance(root.node_cache, NodeTable)
+        self.assertEqual(root.node_cache.sizes_by_ply[:3], [1, 1, 1])
+
+    def test_bucketed_evaluation_cache_retains_opening_and_drops_deep_entries(self):
+        cache = EvaluationCache()
+        opening = (1, 0)
+        deep = ((1 << 8) - 1, ((1 << 16) - 1) ^ ((1 << 8) - 1))
+        cache[opening] = "opening"
+        cache[deep] = "deep"
+
+        self.assertEqual(cache.get(opening), "opening")
+        self.assertIsNone(cache.get(deep))
+        self.assertEqual(cache.hits_by_ply[1], 1)
+        self.assertEqual(cache.misses_by_ply[16], 1)
+
+    def test_root_promotion_prunes_only_incompatible_positions(self):
+        table = {}
+        context = TreeContext(evaluation_cache={}, node_cache=table)
+        root = Node(HexBoardState(), tree_context=context)
+        kept = root.create_edge(0).child
+        dropped = root.create_edge(1).child
+
+        pruned = kept.promote_to_root(threshold=0)
+
+        self.assertEqual(pruned, 2)
+        self.assertIn((kept.p1_bits, kept.p2_bits), table)
+        self.assertNotIn((dropped.p1_bits, dropped.p2_bits), table)
+
+    def test_node_cache_uses_distinct_board_tuple_keys(self):
+        pairs = (
+            (0, 0),
+            (1 << 0, 1 << 1),
+            ((1 << 3) | (1 << 17), (1 << 2) | (1 << 24)),
+            ((1 << 24), (1 << 0) | (1 << 12)),
+        )
+        node_cache = {}
+        nodes = []
+        for p1_bits, p2_bits in pairs:
+            nodes.append(
+                Node(
+                    None,
+                    p1_bits=p1_bits,
+                    p2_bits=p2_bits,
+                    node_cache=node_cache,
+                )
+            )
+
+        self.assertEqual(len(node_cache), len(pairs))
+        for pair, node in zip(pairs, nodes):
+            self.assertIs(node_cache[pair], node)
+
     def test_lazy_child_state_matches_bitboards_without_mutating_parent(self):
         root = Node(HexBoardState())
-        child = root.create_child(root.legal_moves[0])
-        grandchild = child.create_child(child.legal_moves[0])
+        child = root.create_edge(root.legal_moves[0]).child
+        grandchild = child.create_edge(child.legal_moves[0]).child
 
         self.assertIsNone(grandchild._state)
         self.assertEqual(sum(map(sum, grandchild.state.p1)), 1)
@@ -208,7 +409,7 @@ class TreeTest(unittest.TestCase):
         def descend(indices):
             node = root
             for index in indices:
-                node = node.create_child(next(move for move in node.legal_moves if move.idx == index))
+                node = node.create_edge(next(move for move in node.legal_moves if move.idx == index)).child
             return node
 
         self.assertIs(descend((0, 1, 2, 3)), descend((2, 3, 0, 1)))
@@ -234,9 +435,9 @@ class TreeTest(unittest.TestCase):
             def run(self):
                 edge = self.root.create_edge(self.root.legal_moves[0])
                 child = edge.child
-                for row in range(child.state.size):
-                    child.state.p1[row][0] = 1
-                edge.N = 1
+                child.stored_terminal = True
+                child.stored_terminal_outcome = 1
+                edge.backpropagate(1)
                 promoted_roots.append(child)
                 return self.root
 
@@ -246,7 +447,9 @@ class TreeTest(unittest.TestCase):
             play_game(model=object())
 
         promoted_root = promoted_roots[-1]
+        self.assertEqual(len(promoted_roots), 1)
         self.assertIsInstance(promoted_root, Node)
+        self.assertFalse(hasattr(promoted_root, "parent"))
 
 
 class TerminalTest(unittest.TestCase):
@@ -259,6 +462,19 @@ class TerminalTest(unittest.TestCase):
 
     def test_terminal_leaf_never_calls_nn_and_propagates_exactly_minus_one(self):
         self._assert_terminal_result(player=2, expected=-1)
+
+    def test_edge_terminal_check_is_default_and_last_move_is_opt_in(self):
+        self.assertFalse(
+            MCTS(Node(HexBoardState()), None, 1).use_last_move_terminal_check
+        )
+        self.assertTrue(
+            MCTS(
+                Node(HexBoardState()),
+                None,
+                1,
+                use_last_move_terminal_check=True,
+            ).use_last_move_terminal_check
+        )
 
     def _assert_terminal_result(self, player, expected):
         state = HexBoardState()
@@ -289,8 +505,62 @@ class TerminalTest(unittest.TestCase):
         self.assertEqual(root.total_edge_visits, 1)
         self.assertEqual(terminal_edge.Q(), expected)
 
+    def test_last_move_terminal_check_matches_reference_on_legal_extensions(self):
+        """Exhaust every legal next move from varied legal non-terminal paths."""
+        generator = random.Random(83)
+        for _ in range(12):
+            node = Node(HexBoardState())
+            while not node.is_terminal(use_last_move_terminal_check=False):
+                legal_indices = list(node.iter_legal_move_indices())
+                for move_idx in legal_indices:
+                    move_bit = 1 << move_idx
+                    p1_bits = (
+                        node.p1_bits | move_bit if node.p1_turn else node.p1_bits
+                    )
+                    p2_bits = (
+                        node.p2_bits if node.p1_turn else node.p2_bits | move_bit
+                    )
+                    reference = Node(
+                        None,
+                        move_index=node.move_index + 1,
+                        p1_bits=p1_bits,
+                        p2_bits=p2_bits,
+                    )
+                    experimental = Node(
+                        None,
+                        move_index=node.move_index + 1,
+                        p1_bits=p1_bits,
+                        p2_bits=p2_bits,
+                    )
+                    self.assertEqual(
+                        experimental.is_terminal(
+                            last_move_idx=move_idx,
+                            use_last_move_terminal_check=True,
+                        ),
+                        reference.is_terminal(use_last_move_terminal_check=False),
+                    )
+                    self.assertEqual(
+                        experimental.stored_terminal_outcome,
+                        reference.stored_terminal_outcome,
+                    )
+
+                move_idx = generator.choice(legal_indices)
+                node = node.create_edge(move_idx).child
+
 
 class PerspectiveTest(unittest.TestCase):
+    def test_run_inline_backpropagation_maintains_edge_caches(self):
+        root = Node(HexBoardState())
+        MCTS(root, None, 2).run()
+
+        self.assertEqual(root.total_edge_visits, 1)
+        self.assertEqual(len(root.children), 1)
+        edge = root.children[0]
+        self.assertEqual(edge.N, 1)
+        self.assertEqual(edge.Q(), edge.W)
+        self.assertEqual(edge.selection_q, edge.W)
+        self.assertEqual(edge.puct_weight, edge.prior / 2)
+
     def test_same_q_player_one_prefers_larger_and_player_two_smaller(self):
         self.assertEqual(self._selected_q(move_index=0), 0.75)
         self.assertEqual(self._selected_q(move_index=1), -0.25)
@@ -300,12 +570,12 @@ class PerspectiveTest(unittest.TestCase):
         parent = Node(HexBoardState(), move_index=move_index)
         lower = parent.create_edge(parent.legal_moves[0])
         higher = parent.create_edge(parent.legal_moves[1])
-        lower.N = higher.N = 1
-        lower.W = -0.25
-        higher.W = 0.75
-        parent.total_edge_visits = 2
+        lower.backpropagate(-0.25)
+        higher.backpropagate(0.75)
+        parent._install_policy([1 / 25] * 25)
 
-        return parent.best_child_using_uct(c=0).Q()
+        action = parent.get_best_action_using_puct(c=0)
+        return parent.edge_for_move(action).Q()
 
 
 class PUCTTest(unittest.TestCase):
@@ -313,22 +583,22 @@ class PUCTTest(unittest.TestCase):
         random.seed(11)
         parent = Node(HexBoardState())
         parent.store_policy(torch.randn(HEX_BOARD_SIZE * HEX_BOARD_SIZE))
-        parent.total_edge_visits = 40
         for move in random.sample(parent.legal_moves, 8):
             edge = parent.create_edge(move)
-            edge.N = random.randint(1, 8)
-            edge.W = random.uniform(-edge.N, edge.N)
+            for _ in range(random.randint(1, 8)):
+                edge.backpropagate(random.uniform(-1, 1))
+        parent.total_edge_visits = 40
 
         expected = None
         expected_score = -float("inf")
         exploration_factor = 1.4 * parent.total_edge_visits ** 0.5
-        for move in sorted(parent.legal_moves, key=lambda item: item.idx):
-            edge = parent.move_edge_map.get(move.idx)
+        for move_idx in sorted(parent.iter_legal_move_indices()):
+            edge = parent.edge_for_move(move_idx)
             n = 0 if edge is None else edge.N
             q = 0 if edge is None else edge.Q()
-            score = q + exploration_factor * parent.stored_policy[move.idx] / (1 + n)
+            score = q + exploration_factor * parent.stored_policy[move_idx] / (1 + n)
             if score > expected_score:
-                expected = move
+                expected = move_idx
                 expected_score = score
 
         self.assertEqual(parent.get_best_action_using_puct(c=1.4), expected)
@@ -338,17 +608,20 @@ class PUCTTest(unittest.TestCase):
         low_prior_move, high_prior_move = parent.legal_moves[:2]
         low_prior_edge = parent.create_edge(low_prior_move)
         high_prior_edge = parent.create_edge(high_prior_move)
-        parent.total_edge_visits = 10
         for edge in (low_prior_edge, high_prior_edge):
-            edge.N = 3
-            edge.W = 1.5
+            for _ in range(3):
+                edge.backpropagate(0.5)
+        parent.total_edge_visits = 10
 
         policy = [0.0] * (HEX_BOARD_SIZE * HEX_BOARD_SIZE)
         policy[low_prior_move.get_idx()] = 0.2
         policy[high_prior_move.get_idx()] = 0.8
         parent._install_policy(policy)
 
-        self.assertEqual(parent.get_best_action_using_puct(c=1.0), high_prior_move)
+        self.assertEqual(
+            parent.get_best_action_using_puct(c=1.0),
+            high_prior_move.idx,
+        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 """Utilities for comparing Hex agents in head-to-head games."""
 
-import random
 from itertools import combinations
 from pathlib import Path
 
@@ -17,11 +16,21 @@ from settings import DEVICE, HEX_BOARD_SIZE
 Competitor = tuple[str, CustomNNUE | None]
 
 
+def _opening_schedule(
+    competitor_a: Competitor,
+    competitor_b: Competitor,
+    opening_moves: list[Move],
+):
+    """Play both color assignments for every possible first move."""
+    for opening_move in opening_moves:
+        yield competitor_a, competitor_b, opening_move
+        yield competitor_b, competitor_a, opening_move
+
+
 def arena(
     model_1: CustomNNUE | None = None,
     model_2: CustomNNUE | None = None,
     mcts_iterations: int = 4_000,
-    games_per_pairing: int = 10,
     include_plain_mcts: bool = True,
 ) -> None:
     """
@@ -29,7 +38,7 @@ def arena(
 
     Every competitor receives exactly `mcts_iterations` simulations per move.
     Games are sequential to avoid Python/PyTorch thread contention.
-    Each color-swapped pair of games shares one randomly selected first move.
+    Every possible first move is played with both color assignments.
     Each competitor reuses its own search subtree whenever possible.
     """
 
@@ -38,12 +47,8 @@ def arena(
 
     if isinstance(mcts_iterations, bool) or not isinstance(mcts_iterations, int):
         raise TypeError("mcts_iterations must be an integer")
-    if isinstance(games_per_pairing, bool) or not isinstance(games_per_pairing, int):
-        raise TypeError("games_per_pairing must be an integer")
     if mcts_iterations <= 0:
         raise ValueError("mcts_iterations must be positive")
-    if games_per_pairing < 0:
-        raise ValueError("games_per_pairing cannot be negative")
 
     competitors: list[Competitor] = []
 
@@ -61,6 +66,8 @@ def arena(
         return
 
     pairings = list(combinations(competitors, 2))
+    opening_moves = HexBoardState().get_legal_moves()
+    games_per_pairing = 2 * len(opening_moves)
     total_games = len(pairings) * games_per_pairing
     pairing_scores = [[0, 0] for _ in pairings]
 
@@ -101,7 +108,7 @@ def arena(
                     key=lambda edge: edge.N,
                 )
 
-                played_move = best_edge.action
+                played_move_idx = best_edge.move_idx
                 best_child = best_edge.child
 
                 move_index += 1
@@ -121,13 +128,14 @@ def arena(
                 # The player who just searched can directly promote its chosen
                 # child, exactly like training/self-play.
                 roots[player_index] = best_child
+                best_child.promote_to_root()
 
                 # Advance the other player's private tree through the move too.
                 # If that move was already expanded in its tree, preserve the
                 # entire subtree, accumulator, statistics and caches.
                 other_index = 1 - player_index
                 other_root = roots[other_index]
-                matching_edge = other_root.move_edge_map.get(played_move.idx)
+                matching_edge = other_root.edge_for_move(played_move_idx)
 
                 if matching_edge is not None:
                     roots[other_index] = matching_edge.child
@@ -135,8 +143,11 @@ def arena(
                     # Its tree did not contain the actual move. Build a fresh
                     # root, but preserve its position and evaluation caches.
                     state = best_child.state
-                    position_key = (best_child.p1_bits, best_child.p2_bits)
-                    matching_node = other_root.node_cache.get(position_key)
+                    child_position_key = (
+                        best_child.p1_bits,
+                        best_child.p2_bits,
+                    )
+                    matching_node = other_root.node_cache.get(child_position_key)
 
                     if matching_node is not None:
                         roots[other_index] = matching_node
@@ -144,10 +155,11 @@ def arena(
                         roots[other_index] = Node(
                             state,
                             move_index=move_index,
-                            evaluation_cache=other_root.evaluation_cache,
-                            model_signature=other_root.model_signature,
-                            node_cache=other_root.node_cache,
+                            search_context=other_root.search_context,
+                            tree_context=other_root.tree_context,
                         )
+
+                roots[other_index].promote_to_root()
 
     with tqdm(
         total=total_games,
@@ -155,18 +167,11 @@ def arena(
         unit="game",
     ) as progress:
         for pairing_index, (competitor_a, competitor_b) in enumerate(pairings):
-            opening_move = None
-
-            for game_index in range(games_per_pairing):
-                if game_index % 2 == 0:
-                    player_1, player_2 = competitor_a, competitor_b
-                    opening_move = random.choice(HexBoardState().get_legal_moves())
-                else:
-                    player_1, player_2 = competitor_b, competitor_a
-
-                if opening_move is None:
-                    raise RuntimeError("Arena game pair has no opening move")
-
+            for player_1, player_2, opening_move in _opening_schedule(
+                competitor_a,
+                competitor_b,
+                opening_moves,
+            ):
                 winner = play_arena_game(player_1, player_2, opening_move)
                 score = pairing_scores[pairing_index]
 
@@ -248,7 +253,7 @@ if __name__ == "__main__":
     older_weights_path = (
         source_directory
         / "weights" / f"board_size{HEX_BOARD_SIZE}"
-        / newest_weights_path.name
+        / "temp_pre_win_in_one_finetune" / "model_weights.pt"
     )
 
     if not older_weights_path.is_file():
@@ -278,7 +283,6 @@ if __name__ == "__main__":
     arena(
         newest_model,
         older_model,
-        mcts_iterations=5_0,
-        games_per_pairing=20,
+        mcts_iterations=5_000,
         include_plain_mcts=True,
     )

@@ -41,7 +41,7 @@ def play_game(model: CustomNNUE | None, eval_cache: dict | None = None, display:
                 )
                 
             # for child in mtcs_results_node.children:
-            #     print(f"Child move: {child.move_from_parent}, Visits: {child.N}")
+            #     print(f"Child move index: {child.move_idx}, Visits: {child.N}")
             
             
             
@@ -58,15 +58,13 @@ def play_game(model: CustomNNUE | None, eval_cache: dict | None = None, display:
                 best_edge = max(mtcs_results_node.children, key=lambda edge: edge.N)
             
             # print([edge.N for edge in mtcs_results_node.children])
-            # print(f"Best child move: {best_edge.move_from_parent}")
+            # print(f"Best child move index: {best_edge.move_idx}")
             
             total_visits = sum(edge.N for edge in mtcs_results_node.children)
             policy_target = [0.0] * (HEX_BOARD_SIZE ** 2)
             if total_visits > 0:
                 for edge in mtcs_results_node.children:
-                    _, row, col = edge.move_from_parent
-                    idx = row * HEX_BOARD_SIZE + col
-                    policy_target[idx] = edge.N / total_visits
+                    policy_target[edge.move_idx] = edge.N / total_visits
 
             policies.append(policy_target)            
             states.append((
@@ -88,6 +86,7 @@ def play_game(model: CustomNNUE | None, eval_cache: dict | None = None, display:
             best_child: Node = best_edge.child
             state = best_child.state
             root = best_child
+            root.promote_to_root()
             moves_played += 1
 
             # Optimisation benchmark: only process the first three moves.
